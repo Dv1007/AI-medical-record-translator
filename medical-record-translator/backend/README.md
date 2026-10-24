@@ -6,4 +6,4 @@ From this directory, create and activate a virtual environment, install `require
 uvicorn app.main:app --reload
 ```
 
-The API listens at `http://localhost:8000`; interactive API docs are at `/docs`.
+The API listens at `http://localhost:8001`; interactive API docs are at `/docs`.
