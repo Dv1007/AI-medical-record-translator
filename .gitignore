@@ -1,0 +1,16 @@
+# Environment variables and API keys
+.env
+.env.*
+!.env.example
+
+# Secret files
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Frontend dependencies and build output
+node_modules/
+dist/
