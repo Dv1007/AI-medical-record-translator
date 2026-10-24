@@ -1,66 +1,105 @@
-"""Minimal API for safe PDF text extraction."""
 
 from io import BytesIO
+import re
 
 import fitz
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(
-    title="AI Medical Record Translator API",
-    version="0.1.0",
-    description="Phase 1 API: extract selectable text from PDF lab reports.",
-)
+app = FastAPI(title="AI Medical Record Translator")
 
-# Local Vite development server. Restrict origins before deploying this service.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+MAX_FILE_SIZE = 10 * 1024 * 1024
+MAX_PAGES = 100
 
 
-@app.get("/api/health")
-async def health() -> dict[str, str]:
+@app.get("/health")
+def health():
     return {"status": "ok"}
 
 
-@app.post("/api/extract")
-async def extract_pdf(file: UploadFile = File(...)) -> dict[str, object]:
-    """Extract text from a selectable-text PDF; scanned PDFs need OCR (later phase)."""
-    if file.content_type != "application/pdf" and not (file.filename or "").lower().endswith(".pdf"):
-        raise HTTPException(status_code=415, detail="Please upload a PDF file.")
+def find_likely_lab_lines(text: str) -> list[dict]:
+    """Find candidate lab-result lines without claiming they are verified."""
+    candidates = []
 
-    content = await file.read(MAX_UPLOAD_BYTES + 1)
-    if len(content) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="PDF must be 20 MB or smaller.")
-    if not content.startswith(b"%PDF-"):
-        raise HTTPException(status_code=400, detail="The uploaded file is not a valid PDF.")
+    # Deliberately conservative: identify lines containing common test names
+    # and numeric values. This is not a complete medical-report parser.
+    test_names = (
+        "WBC", "RBC", "Hemoglobin", "Haemoglobin", "Hematocrit",
+        "Platelets", "Glucose", "Sodium", "Potassium", "Creatinine",
+        "Cholesterol", "TSH", "ALT", "AST", "Calcium",
+    )
+
+    for line in text.splitlines():
+        cleaned = " ".join(line.split())
+        if not cleaned or len(cleaned) > 300:
+            continue
+
+        if any(
+            re.search(rf"\b{re.escape(name)}\b", cleaned, re.IGNORECASE)
+            for name in test_names
+        ) and re.search(r"\d", cleaned):
+            candidates.append({
+                "text": cleaned,
+                "needs_review": True,
+                "note": "Candidate line; verify the value, unit, and reference range.",
+            })
+
+    return candidates[:100]
+
+
+@app.post("/api/reports/extract")
+async def extract_report(file: UploadFile = File(...)):
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(400, "Please upload a PDF file.")
+
+    contents = await file.read(MAX_FILE_SIZE + 1)
+
+    if len(contents) > MAX_FILE_SIZE:
+        raise HTTPException(413, "The PDF must be 10 MB or smaller.")
+
+    if not contents:
+        raise HTTPException(400, "The uploaded file is empty.")
 
     try:
-        with fitz.open(stream=BytesIO(content), filetype="pdf") as document:
-            if document.is_encrypted:
-                raise HTTPException(status_code=400, detail="Password-protected PDFs are not supported.")
-            pages = [page.get_text("text").strip() for page in document]
+        with fitz.open(stream=BytesIO(contents), filetype="pdf") as doc:
+            if doc.is_encrypted:
+                raise HTTPException(400, "Password-protected PDFs are not supported.")
+
+            if doc.page_count < 1 or doc.page_count > MAX_PAGES:
+                raise HTTPException(400, "The PDF must contain 1–100 pages.")
+
+            page_count = doc.page_count
+            extracted_text = "\n".join(page.get_text() for page in doc).strip()
+
     except HTTPException:
         raise
-    except (fitz.FileDataError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail="The PDF could not be read.") from exc
+    except Exception:
+        raise HTTPException(400, "Could not read this PDF. Please try another file.")
 
-    extracted_text = "\n\n".join(text for text in pages if text)
     if not extracted_text:
         raise HTTPException(
-            status_code=422,
-            detail="No selectable text was found. Scanned PDFs require OCR, which is not available yet.",
+            422,
+            "No selectable text was found. Scanned PDFs are not supported in this demo.",
         )
 
+    candidates = find_likely_lab_lines(extracted_text)
+
     return {
-        "filename": file.filename or "report.pdf",
-        "page_count": len(pages),
-        "text": extracted_text,
-        "disclaimer": "Text extraction only. This application does not interpret results or provide medical advice.",
+        "filename": file.filename,
+        "page_count": page_count,
+        "extracted_text": extracted_text,
+        "candidate_results": candidates,
+        "status": "text_extracted",
+        "message": (
+            "Text was extracted. Candidate results have not been verified. "
+            "No diagnosis or treatment recommendation has been generated."
+        ),
     }
