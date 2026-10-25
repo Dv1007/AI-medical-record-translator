@@ -68,3 +68,10 @@ def test_missing_value_is_not_invented():
 
 def test_empty_text_returns_no_results():
     assert find_likely_lab_lines("") == []
+
+def test_unit_search_recognizes_valid_formats_and_rejects_ambiguous_unit():
+    from app.main import UNIT_SEARCH_RE
+
+    assert UNIT_SEARCH_RE.search("10^9/L").group(0) == "10^9/L"
+    assert UNIT_SEARCH_RE.search("10^3/uL").group(0) == "10^3/uL"
+    assert UNIT_SEARCH_RE.search("10I/L") is None

@@ -1,10 +1,6 @@
 import os
 from google import genai
 
-if not os.getenv("GEMINI_API_KEY"):
-    print("ERROR: GEMINI_API_KEY is not set.")
-    raise SystemExit(1)
-
 try:
     client = genai.Client()
 
